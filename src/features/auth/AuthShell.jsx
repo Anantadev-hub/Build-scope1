@@ -38,6 +38,8 @@ export function AuthShell({ eyebrow, title, description, children, footer, aside
           ))}
         </ol>
 
+        {aside && <div className="auth-panel-aside">{aside}</div>}
+
         <div className="auth-panel-foot">
           <span><WifiOff size={11} /> NO NETWORK CALLS</span>
           <span><Lock size={11} /> LOCAL DEMO SESSION</span>
@@ -53,7 +55,6 @@ export function AuthShell({ eyebrow, title, description, children, footer, aside
           {children}
           {footer && <div className="auth-card-foot">{footer}</div>}
         </div>
-        {aside}
       </section>
     </div>
   );

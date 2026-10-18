@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   Network, Plus, Trash2, Link2, Layers, Target, FileText,
@@ -238,9 +238,9 @@ export default function ProofGraph() {
           </EmptyState>
         </Card>
       ) : (
-        // The diagram needs the full width to show all five stages; the tables
-        // keep the selection panel beside them.
-        <div className={view === 'diagram' ? 'stack' : 'g-2-1 grid'}>
+        // The diagram and the wide matrices need the full column width; the
+        // selection panel only takes a side column once a node is open.
+        <div className={view === 'diagram' || !selected ? 'stack' : 'g-2-1 grid'}>
           <div>
             {view === 'diagram' && (
               <Card
@@ -379,6 +379,21 @@ export default function ProofGraph() {
 }
 
 function ChainTable({ project, chains, onExtend, onSelect, navigate }) {
+  const scrollRef = useRef(null);
+  const [scrolls, setScrolls] = useState(false);
+
+  // The hint is only shown when the matrix really overflows; at wide widths all
+  // five stages fit and a "scroll" prompt would be noise.
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return undefined;
+    const check = () => setScrolls(el.scrollWidth > el.clientWidth + 2);
+    check();
+    const ro = new ResizeObserver(check);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [chains.length]);
+
   if (!chains.length) {
     return (
       <Card>
@@ -389,8 +404,13 @@ function ChainTable({ project, chains, onExtend, onSelect, navigate }) {
     );
   }
   return (
-    <Card title="Need-to-proof chains" eyebrow="One row per recorded need" flush>
-      <div className="scroll-x">
+    <Card
+      title="Need-to-proof chains"
+      eyebrow="One row per recorded need"
+      actions={scrolls ? <span className="mono xs muted">Scroll for all five stages →</span> : null}
+      flush
+    >
+      <div className="scroll-x" ref={scrollRef}>
         <table className="table">
           <caption className="sr-only">Traceability chains from need to test result</caption>
           <thead>

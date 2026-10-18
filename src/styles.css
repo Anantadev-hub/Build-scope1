@@ -559,6 +559,15 @@ table.table tbody tr:hover { background: rgba(224, 228, 217, .32); }
 table.table td.num, table.table th.num { text-align: right; font-family: var(--font-mono); font-size: 11.5px; white-space: nowrap; }
 table.table .cell-title { font-weight: 600; color: var(--ink); }
 table.table .sub { display: block; color: var(--ink-2); font-size: 11px; margin-top: 2px; }
+/* Record titles inside dense matrices wrap instead of forcing a 1600px table. */
+table.table .btn.link { white-space: normal; text-align: left; line-height: 1.4; }
+table.table td:first-child .btn.link { max-width: 26ch; }
+
+/* Wide matrices: keep the row label in view while the stage columns scroll. */
+.scroll-x > table.table th:first-child,
+.scroll-x > table.table td:first-child { position: sticky; left: 0; z-index: 2; background: var(--surface); box-shadow: 1px 0 0 var(--line-soft); }
+.scroll-x > table.table th:first-child { background: var(--surface-2); }
+table.table tbody tr:hover td:first-child { background: rgba(224, 228, 217, .55); }
 
 /* ---------- tracks / progress ---------- */
 .track { display: flex; gap: 2px; height: 7px; width: 100%; }
@@ -874,7 +883,7 @@ table.table .sub { display: block; color: var(--ink-2); font-size: 11px; margin-
 .auth { min-height: 100vh; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.25fr); background: var(--paper); }
 .auth-panel {
   background: var(--ink); color: #e9e6db; padding: 40px clamp(22px, 3.4vw, 46px);
-  display: flex; flex-direction: column; justify-content: center; gap: 22px;
+  display: flex; flex-direction: column; justify-content: flex-start; gap: 22px;
   border-right: 1px solid #141513;
 }
 .auth-brand { display: flex; align-items: center; gap: 10px; }
@@ -886,7 +895,7 @@ table.table .sub { display: block; color: var(--ink-2); font-size: 11px; margin-
 .auth-protocol .mono { color: var(--amber); font-size: 10px; padding-top: 3px; }
 .auth-protocol b { display: block; font-family: var(--font-display); font-size: 13.5px; color: #f1eee4; font-weight: 600; }
 .auth-protocol em { font-style: normal; display: block; font-size: 11.5px; color: #a8b09c; margin-top: 2px; max-width: 40ch; }
-.auth-panel-foot { display: flex; flex-wrap: wrap; gap: 8px 16px; font-family: var(--font-mono); font-size: 9.5px; letter-spacing: .07em; color: #8f9784; }
+.auth-panel-foot { display: flex; flex-wrap: wrap; gap: 8px 16px; font-family: var(--font-mono); font-size: 9.5px; letter-spacing: .07em; color: #8f9784; margin-top: auto; }
 .auth-panel-foot span { display: inline-flex; align-items: center; gap: 5px; }
 
 .auth-forms { padding: 40px clamp(20px, 4vw, 64px); display: flex; flex-direction: column; justify-content: center; gap: 16px; max-width: 760px; }
@@ -898,6 +907,15 @@ table.table .sub { display: block; color: var(--ink-2); font-size: 11px; margin-
 .auth-aside { border-left: 2px solid var(--sage-mid); padding-left: 14px; max-width: 66ch; }
 .auth-aside h2 { font-size: 15px; margin-bottom: 6px; }
 .auth-aside ul { padding-left: 18px; }
+
+/* The explanatory aside lives in the dark panel on desktop: it fills the column
+   and keeps the form card free of secondary prose. */
+.auth-panel-aside { border-top: 1px solid #3a3d37; padding-top: 16px; }
+.auth-panel-aside .auth-aside { border-left-color: #4d5648; }
+.auth-panel-aside .auth-aside h2 { color: #f1eee4; font-size: 14.5px; }
+.auth-panel-aside .auth-aside p, .auth-panel-aside .auth-aside li { color: #a8b09c; }
+.auth-panel-aside .auth-aside b { color: #e4e1d6; }
+.auth-panel-aside .auth-aside ul { margin: 0 0 10px; display: grid; gap: 6px; }
 
 .auth-demo-block {
   border: 1px dashed var(--field); background: var(--sage);
@@ -1021,7 +1039,10 @@ table.table .sub { display: block; color: var(--ink-2); font-size: 11px; margin-
   .welcome-right { border-left: 0; border-top: 1px solid #141513; }
   .welcome-left { padding: 32px 20px; }
   .auth { grid-template-columns: minmax(0,1fr); }
-  .auth-panel { border-right: 0; border-bottom: 1px solid #141513; padding: 26px 20px; }
+  .auth-panel { border-right: 0; border-bottom: 1px solid #141513; padding: 20px 20px 22px; gap: 12px; }
+  /* Keep the form above the fold on phones: the panel is a short masthead there. */
+  .auth-panel-lead { font-size: 13px; }
+  .auth-protocol, .auth-panel-aside, .auth-panel-foot { display: none; }
   .auth-forms { padding: 22px 18px 60px; max-width: none; }
   .auth-card { padding: 20px 16px; }
   .page-head { flex-direction: column; align-items: flex-start; }
@@ -1044,6 +1065,17 @@ table.table .sub { display: block; color: var(--ink-2); font-size: 11px; margin-
   .topbar .crumbs { font-size: 9px; }
   .cmdbtn kbd { display: none; }
   .cmdbtn span.lbl { display: none; }
+}
+
+/* Motion is decorative: toasts, the mobile drawer, and the graph zoom all snap
+   to their end state when the visitor asks for reduced motion. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: .001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .001ms !important;
+    scroll-behavior: auto !important;
+  }
 }
 
 @media print {
