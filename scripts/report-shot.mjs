@@ -1,0 +1,25 @@
+import { chromium } from 'playwright';
+import fs from 'node:fs';
+
+const browser = await chromium.launch();
+const context = await browser.newContext({ viewport: { width: 1440, height: 1000 }, acceptDownloads: true });
+const page = await context.newPage();
+await page.goto('http://127.0.0.1:3000/', { waitUntil: 'networkidle' });
+await page.getByRole('button', { name: /Explore the Kabadiwala Connect case/i }).click();
+await page.waitForTimeout(500);
+await page.goto('http://127.0.0.1:3000/projects/prj_kabadiwala/reports', { waitUntil: 'networkidle' });
+await page.getByRole('button', { name: 'Generate report' }).click();
+await page.waitForTimeout(800);
+await page.locator('#report-preview').scrollIntoViewIfNeeded();
+await page.waitForTimeout(400);
+await page.screenshot({ path: 'shots/40-report-viewport.png' });
+await page.evaluate(() => window.scrollBy(0, 900));
+await page.waitForTimeout(300);
+await page.screenshot({ path: 'shots/41-report-viewport2.png' });
+const dl = page.waitForEvent('download', { timeout: 30000 });
+await page.getByRole('button', { name: 'Download PDF' }).click();
+const download = await dl;
+const name = download.suggestedFilename();
+await download.saveAs(`shots/${name}`);
+console.log('PDF:', name, fs.statSync(`shots/${name}`).size, 'bytes');
+await browser.close();

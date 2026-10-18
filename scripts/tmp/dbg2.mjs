@@ -1,0 +1,25 @@
+import { chromium } from 'playwright';
+const b = await chromium.launch();
+const ctx = await b.newContext({ viewport: { width: 1440, height: 1000 } });
+const p = await ctx.newPage();
+const errs = [];
+p.on('pageerror', e => errs.push(e.stack || e.message));
+p.on('console', m => { if (m.type()==='error') errs.push('console: ' + m.text()); });
+await p.goto('http://127.0.0.1:3000/login', { waitUntil: 'networkidle' });
+await p.getByRole('button', { name: /Enter demo workspace/i }).click();
+await p.waitForTimeout(600);
+await p.goto('http://127.0.0.1:3000/projects/new', { waitUntil: 'networkidle' });
+await p.getByLabel(/Project name/i).fill('Debug case');
+await p.getByRole('button', { name: /Open case file/i }).click();
+await p.waitForTimeout(900);
+console.log('URL', p.url());
+const st = await p.evaluate(() => {
+  const s = JSON.parse(localStorage.getItem('buildscope.ai.session.v1') || 'null');
+  const key = s ? `buildscope.ai.workspace.v2:${s.accountId}` : null;
+  const raw = key ? localStorage.getItem(key) : null;
+  const parsed = raw ? JSON.parse(raw) : null;
+  return { key, projects: parsed?.projects?.length, name: parsed?.projects?.[0]?.name };
+});
+console.log('STATE', JSON.stringify(st));
+console.log('ERRORS\n' + errs.slice(0, 3).join('\n---\n'));
+await b.close();
