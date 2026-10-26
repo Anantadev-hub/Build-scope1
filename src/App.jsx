@@ -3,6 +3,7 @@ import { Routes, Route, Link } from 'react-router-dom';
 import AppShell from './app/AppShell';
 import { RequireAuth, RedirectIfSignedIn, useAuth } from './app/auth';
 import { AppProvider } from './app/store';
+import { demoDataEnabled } from './config';
 import Welcome from './features/onboarding/Welcome';
 import LoginScreen from './features/auth/LoginScreen';
 import RegisterScreen from './features/auth/RegisterScreen';
@@ -25,10 +26,16 @@ import Achievements from './features/gamification/Achievements';
 
 // Every workspace view runs inside its own account's storage key, so switching
 // demo accounts swaps the whole dataset instead of merging two people's cases.
+// Fixtures are seeded only when demo data is explicitly enabled (demo build or
+// demo account); a normal account starts empty.
 function Workspace({ children }) {
-  const { workspaceKey } = useAuth();
+  const { workspaceKey, session } = useAuth();
   return (
-    <AppProvider key={workspaceKey || 'unscoped'} storageKey={workspaceKey || undefined}>
+    <AppProvider
+      key={workspaceKey || 'unscoped'}
+      storageKey={workspaceKey || undefined}
+      seedDemo={demoDataEnabled(session)}
+    >
       {children}
     </AppProvider>
   );

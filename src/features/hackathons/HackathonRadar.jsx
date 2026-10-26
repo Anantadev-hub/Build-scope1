@@ -4,7 +4,9 @@ import {
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { useApp } from '../../app/store';
+import { useAuth } from '../../app/auth';
 import { usePageTitle } from '../../app/hooks';
+import { demoDataEnabled } from '../../config';
 import {
   Badge, Btn, Card, EmptyState, Field, Modal, Notice, PageHead, StatusBadge,
 } from '../../components/ui';
@@ -237,6 +239,7 @@ function TrackingModal({ event, tracking, projects, defaultProjectId, onClose, o
 
 export default function HackathonRadar() {
   const { state, actions, pushToast } = useApp();
+  const { session } = useAuth();
   const navigate = useNavigate();
   const [q, setQ] = useState('');
   const [filters, setFilters] = useState({ time: '', reg: '', format: '', domain: '', participation: '', cost: '', team: '', from: '', to: '' });
@@ -244,7 +247,10 @@ export default function HackathonRadar() {
   const [modal, setModal] = useState(null);
   usePageTitle('Hackathon Radar');
 
-  const events = useMemo(() => [...state.hackathons, ...DEMO_HACKATHONS], [state.hackathons]);
+  // Simulated listings are only merged in explicit demo mode; a production
+  // workspace shows what its own records contain, nothing else.
+  const demoEvents = useMemo(() => (demoDataEnabled(session) ? DEMO_HACKATHONS : []), [session]);
+  const events = useMemo(() => [...state.hackathons, ...demoEvents], [state.hackathons, demoEvents]);
   const domains = [...new Set(events.flatMap((e) => e.domains || []))];
   const project = state.projects.find((p) => p.id === state.activeProjectId) || null;
 
@@ -319,19 +325,21 @@ export default function HackathonRadar() {
         actions={<Btn variant="primary" onClick={() => setModal({ type: 'add' })}><Plus size={14} /> Add event manually</Btn>}
       />
 
-      <div className="demo-banner" role="note">
-        <AlertTriangle size={15} aria-hidden="true" />
-        <div>
-          <b>DEMO DATA — NOT LIVE VERIFIED.</b> Every seeded event below is a simulated fixture with a fictional organiser.
-          Dates are illustrative, not real deadlines, and no event is described as accepting registrations. Add a live listing
-          yourself after checking the official source.
+      {demoEvents.length > 0 && (
+        <div className="demo-banner" role="note">
+          <AlertTriangle size={15} aria-hidden="true" />
+          <div>
+            <b>DEMO DATA — NOT LIVE VERIFIED.</b> Every seeded event below is a simulated fixture with a fictional organiser.
+            Dates are illustrative, not real deadlines, and no event is described as accepting registrations. Add a live listing
+            yourself after checking the official source.
+          </div>
         </div>
-      </div>
+      )}
 
       <div className="grid g4 mb16">
         {[
-          ['Simulated listings', String(DEMO_HACKATHONS.length)],
-          ['Manual listings', String(state.hackathons.length)],
+          ...(demoEvents.length > 0 ? [['Simulated listings', String(demoEvents.length)]] : []),
+          ['Your listings', String(state.hackathons.length)],
           ['Tracked opportunities', String(tracked.length)],
           ['Verified events', String(events.filter((e) => e.verification === 'verified').length)],
         ].map(([l, v]) => (

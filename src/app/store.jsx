@@ -67,16 +67,35 @@ function hydrate(raw) {
   };
 }
 
-function load(storageKey) {
+// `seedDemo` is explicit: only a demo account (or a demo-mode build) starts
+// with the worked case. A normal account begins empty rather than inheriting
+// fixtures it never asked for.
+function freshState(seedDemo) {
+  return seedDemo ? withDemo() : { ...blankState, preferences: { ...blankState.preferences } };
+}
+
+function load(storageKey, seedDemo) {
   try {
     const raw = localStorage.getItem(storageKey);
-    if (!raw) return { state: withDemo(), error: null };
+    if (!raw) return { state: freshState(seedDemo), error: null };
     const parsed = JSON.parse(raw);
     const state = hydrate(parsed);
-    if (!state) return { state: withDemo(), error: 'Stored workspace could not be read. A fresh demo workspace was loaded.' };
+    if (!state) {
+      return {
+        state: freshState(seedDemo),
+        error: seedDemo
+          ? 'Stored workspace could not be read. A fresh demo workspace was loaded.'
+          : 'Stored workspace could not be read. An empty workspace was loaded; nothing was deleted.',
+      };
+    }
     return { state, error: null };
   } catch {
-    return { state: withDemo(), error: 'Stored workspace was malformed and could not be read. Demo data was restored; nothing else was changed.' };
+    return {
+      state: freshState(seedDemo),
+      error: seedDemo
+        ? 'Stored workspace was malformed and could not be read. Demo data was restored; nothing else was changed.'
+        : 'Stored workspace was malformed and could not be read. An empty workspace was loaded; storage was left untouched.',
+    };
   }
 }
 
@@ -250,8 +269,8 @@ function reducer(state, action) {
 
 const AppContext = createContext(null);
 
-export function AppProvider({ children, storageKey = DEFAULT_STORAGE_KEY }) {
-  const loaded = useMemo(() => load(storageKey), [storageKey]);
+export function AppProvider({ children, storageKey = DEFAULT_STORAGE_KEY, seedDemo = true }) {
+  const loaded = useMemo(() => load(storageKey, seedDemo), [storageKey, seedDemo]);
   const [state, dispatch] = useReducer(reducer, loaded.state);
   const [toasts, setToasts] = useState([]);
   const [savedAt, setSavedAt] = useState(null);

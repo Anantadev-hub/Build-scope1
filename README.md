@@ -3,8 +3,9 @@
 An investigative workspace that answers one question: **is this idea worth building, what already
 exists, what can we realistically deliver, and what evidence will prove it works?**
 
-The product is frontend-only. It is honest about that: no live search, repository metadata
-retrieval, official verification, or AI analysis is connected in this build. Everything is computed
+The product is frontend-only. It is honest about that: official verification and AI analysis are not
+connected, and repository discovery only reaches a service when a backend route is configured for it
+(see [Repository search configuration](#repository-search-configuration)). Everything else is computed
 from data the user enters or from clearly labelled demo fixtures.
 
 The app opens on a demo sign-in screen. **Enter demo workspace** needs no credentials and loads the
@@ -56,8 +57,9 @@ src/
     gamification/ ranks, XP ledger, achievements
   lib/            models, scoring (missions/XP/passport), report model, PDF renderer,
                   graph + assurance derivations, formatting
-  services/       auth adapter (local demo) and provider interfaces for future backend
-                  integrations (all provider methods unimplemented by design)
+  config.js       validated environment configuration and demo-mode policy
+  services/       api client, auth adapter (local demo), repository-search client, and
+                  provider interfaces for integrations still unimplemented by design
 scripts/          Playwright verification scripts (see below)
 ```
 
@@ -79,6 +81,13 @@ records. Cross-feature links are by stable IDs, not display names:
 
 - Repository, product, dataset, and event records are simulated fixtures. They carry a `DEMO` badge,
   have no fabricated links, and show metadata (stars, licences, dates) as **unknown**.
+- Fixtures are seeded only for an explicitly signed-in demo account, or when the build runs in demo
+  mode (`VITE_APP_MODE=demo`, the default for `vite dev`). A registered account starts with an empty
+  workspace, and a production build seeds nothing. See [Production configuration](#production-configuration).
+- Hackathon Radar merges its simulated listings only in demo mode; otherwise it lists exactly the
+  events the team recorded.
+- Records returned by a configured repository service carry a `LIVE` badge and their retrieval
+  timestamp. They are still public metadata only, not a verification of documented capability.
 - Demo and user-asserted records never satisfy verification checks: `Source Verified`, evidence
   quality, and passport evidence checks only count records a user marked verified with a check date.
 - Hackathon listings are labelled **DEMO DATA — NOT LIVE VERIFIED**; simulated dates are shown as
@@ -111,19 +120,137 @@ session, and clearing site data removes the account and its workspace.
 Everything is stored in `localStorage` under `buildscope.ai.workspace.v2:<accountId>`: projects, mission
 state, evidence, comparisons, risks, requirements, scope, acceptance criteria, proof graph nodes and
 links, manual test records, learning progress, hackathon tracking, reports, passports, XP, achievements,
-and the activity log. Malformed or unreadable stored data falls back to a fresh demo workspace and says
-so instead of crashing.
+and the activity log. Malformed or unreadable stored data falls back to a fresh workspace (seeded only in
+demo mode) and says so instead of crashing.
+
+This is the only persistence layer today. It is **not** a backend: data does not leave the browser and
+nothing syncs across devices. Treat it as local-first storage that a server store will replace, not as
+account persistence.
 
 Workspace controls live on **My Projects**: add the demo case (never replacing existing work) or clear
 the local workspace (with confirmation). Deleting a case removes its dependent records and its XP.
 
-## Future backend integration
+## Production configuration
 
-`src/services/providers.js` defines provider factories for repository search, web/page retrieval, and
-hackathon discovery. Every method throws `ProviderNotConfiguredError` — no fake "live" data is ever
-returned. Normalisation (`normalizeRepository`), deduplication, and the local relevance heuristic are
-implemented so a real adapter can drop in without changing the UI. Secret-bearing calls belong in a
-server route (for example `POST /api/search/repositories`); no credentials belong in this client.
+Configuration is centralised in `src/config.js`. Values are public: Vite inlines every `VITE_*`
+variable into the bundle, so a variable can hold a URL or a mode, never a credential.
+
+| Variable | Purpose | Default |
+|---|---|---|
+| `VITE_APP_MODE` | `demo` or `production` | `demo` for `vite dev`, `production` for `vite build` |
+| `VITE_DEMO_DATA` | force fixtures `on`/`off` in either mode | unset |
+| `VITE_AUTH_ADAPTER` | `local-demo` (implemented) or `backend` (reserved) | `local-demo` |
+| `VITE_API_BASE_URL` | absolute API origin | same origin |
+| `VITE_REPOSITORY_SEARCH_PATH` | default route the backend should expose | `/api/search/repositories` |
+| `VITE_REPOSITORY_SEARCH_URL` | actual repository-search URL; empty disables the feature | unset |
+
+What changes between modes:
+
+- **Demo mode** seeds the worked Kabadiwala Connect case for the demo account, merges the simulated
+  hackathon listings, and keeps the fixture-driven screens populated. Everything is labelled.
+- **Production mode** seeds nothing, merges no fixtures, and shows empty states until real records
+  exist or a service is connected. It never fills a failed request with demo data.
+- A signed-in demo account counts as explicit demo mode in either build, because the user chose that
+  entry point.
+
+Configuration problems that would surface as opaque request failures are detected up front and shown in
+Prior Art Lab's provider panel: malformed URLs, `http://` endpoints on an `https://` page (mixed content),
+`VITE_AUTH_ADAPTER=backend` without an adapter, and fixtures forced on in production.
+
+All HTTP goes through `src/services/api.js`: JSON encoding, a default 20 s timeout, abort propagation,
+`{ error }` extraction, and a single 401 signal that ends the session in one place. Services translate
+`ApiError` into domain messages; components never call `fetch` directly.
+
+## Repository search configuration
+
+Prior Art Lab can query a real repository service. The client is implemented; the service is not part
+of this repository, so **nothing is retrieved until a backend route is configured**.
+
+```bash
+# .env (not committed) — public URL only, never a token
+VITE_REPOSITORY_SEARCH_URL=https://your-backend.example.com/api/search/repositories
+```
+
+- With the variable set, opening a case that has no repository records runs one search automatically;
+  the panel also has a query field and a **Search** / **Retry** button.
+- With it unset, the panel reports **NOT CONFIGURED**, states that no request was made, and shows no
+  substitute data. The derived query list and manual lead entry still work.
+- Results are mapped into the normal record schema (`retrieval: 'live'`, retrieval timestamp,
+  limitations), deduplicated against records already saved for the case, and badged **LIVE**.
+- A failed request is reported with its status and message plus a retry; saved records are untouched and
+  demo fixtures are never shown in place of live results. `src/data/demo.js` is only ever loaded onto
+  the seeded demo case.
+
+Contract the backend must satisfy (`REPOSITORY_SEARCH_CONTRACT` in `src/services/providers.js`):
+
+```http
+POST /api/search/repositories
+Content-Type: application/json
+
+{ "query": "string", "queries": ["string"], "limit": 20,
+  "investigation": { "name": "", "problem": "", "solution": "", "desiredOutcome": "",
+                     "targetUsers": [""], "features": [""], "stack": [""] } }
+```
+
+```json
+{ "results": [ { "name": "", "owner": "", "url": "https://…", "description": "",
+                 "language": "", "topics": [""], "stars": 0, "forks": 0,
+                 "lastUpdated": "ISO date", "licence": "", "docs": "",
+                 "matchReason": "", "overlap": "", "relevantFeatures": [""],
+                 "limitations": "" } ],
+  "retrievedAt": "ISO timestamp", "source": "github", "warnings": [""] }
+```
+
+Non-2xx responses should return `{ "error": "message" }`. The server owns the GitHub/FishAPI
+credential, caching, and rate limits; only the route URL belongs in the browser build. A GitHub-shaped
+response (`html_url`, `stargazers_count`, `updated_at`, `license.spdx_id`, `full_name`) is also accepted.
+
+Other providers — web/product search, paper and dataset search, official-source checks, hackathon
+discovery, CI results — remain unimplemented in `src/services/providers.js` and throw
+`ProviderNotConfiguredError`. No fake "live" data is ever returned.
+
+## Backend contracts required
+
+Only the repository-search contract above is implemented on the client. The rest of the product is a
+local-first workspace whose data model is already stable, so these are the remaining server contracts.
+None of them exist in this repository; nothing in the UI pretends they do.
+
+1. **Authentication / sessions** — `AUTH_CONTRACT` in `src/services/auth.js`: register, login, logout,
+session read, password-reset request and reset. The browser needs an `httpOnly`, `Secure`, `SameSite`
+session cookie; the client must never receive or store a bearer token. `GET /api/auth/session` returning
+401 is already wired to end the session through `src/services/api.js`.
+2. **Workspace persistence** — read and write projects (with their evidence, comparisons, risks,
+requirements, scope, acceptance criteria, proof nodes/links, tests, reports, passports) scoped to the
+authenticated account. Required semantics: server is the source of truth; a per-record revision or
+`updatedAt` for conflict detection; 401/403 for unauthorized access; no account IDs accepted from the
+client body. The store (`src/app/store.jsx`) is the single place that would be swapped for these calls.
+3. **Official sources / verification** — no endpoint. Requirements and evidence are user-entered today;
+any "verified" claim must come from a server-side check that records source URL, check time and method.
+4. **CI results** — `/api/ci/runs` and `/api/ci/runs/:id/artifacts` are documented in `src/lib/assurance.js`
+and remain unimplemented; the UI labels all test records "self-reported".
+5. **Hackathon / paper / dataset discovery** — provider factories exist; capabilities, quotas and
+licensing must be confirmed by the backend team before any adapter is written.
+
+## Deployment
+
+The app is a static Vite build with client-side routes.
+
+```bash
+npm ci
+VITE_API_BASE_URL=https://api.example.com npm run build   # dist/
+npm run preview                                           # local check on :3000
+```
+
+- Configuration is baked in at **build** time. Changing an environment variable requires a rebuild; a
+  variable cannot be changed per request at runtime.
+- Serve `index.html` for unknown paths so deep links such as `/projects/<id>/prior-art` survive a refresh.
+  Netlify/Cloudflare Pages: `/* /index.html 200`. Vercel: a rewrite of `/(.*)` to `/index.html`. nginx:
+  `try_files $uri $uri/ /index.html;`. `vite preview` already does this locally.
+- No host name is compiled in: `vite.config.js` takes allowed preview hosts from
+  `PREVIEW_ALLOWED_HOSTS`, so the same build works on any domain.
+- Keep `.env` out of version control (it is git-ignored); only `.env.example` is committed.
+- A failed or unreachable backend produces a visible error with a retry, not a blank screen: Prior Art
+  Lab is the only screen that calls a backend today.
 
 ## Verification
 
@@ -150,8 +277,11 @@ LD_LIBRARY_PATH=$PWD/.libs/usr/lib/x86_64-linux-gnu FONTCONFIG_FILE=$PWD/.libs/f
 ## Known limitations
 
 - No backend, no real accounts, no sync: authentication is a local demo adapter and data is
-  browser-local.
-- Live search, official-source verification, similarity analysis, CI webhooks, and email delivery remain
+  browser-local. Moving to server persistence is a store-level change plus the contracts above, and is
+  not implemented here.
+- Repository search needs `VITE_REPOSITORY_SEARCH_URL` pointing at a backend route that does not ship
+  here; without it the app says so instead of showing results. Web/product search, paper and dataset
+  search, official-source verification, similarity analysis, CI webhooks, and email delivery remain
   provider/server work. Nothing in the UI claims otherwise.
 - The Opportunity-to-Proof graph only records what the team enters. It never implies that code or tests
   were independently verified.

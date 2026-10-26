@@ -8,10 +8,11 @@ import { checkEmail } from './validation';
 import { cryptoAvailable } from '../../services/auth';
 
 export default function LoginScreen() {
-  const { signIn, demoAccess, status } = useAuth();
+  const { signIn, demoAccess, status, takeNotice } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
   const from = location.state?.from || '/';
+  const [sessionNotice, setSessionNotice] = useState('');
   const [form, setForm] = useState({ email: '', password: '', remember: false });
   const [errors, setErrors] = useState({});
   const [formError, setFormError] = useState('');
@@ -26,6 +27,12 @@ export default function LoginScreen() {
   useEffect(() => {
     if (formError) alertRef.current?.focus();
   }, [formError]);
+
+  // A reason carried over from an ended session (expired or unauthorized).
+  useEffect(() => {
+    const pending = takeNotice();
+    if (pending) setSessionNotice(pending);
+  }, [takeNotice]);
 
   const set = (patch) => setForm((f) => ({ ...f, ...patch }));
 
@@ -102,6 +109,12 @@ export default function LoginScreen() {
       </div>
 
       <div className="auth-divider"><span>or use a local account</span></div>
+
+      {sessionNotice && !formError && (
+        <div className="mb12">
+          <AuthInfo>{sessionNotice}</AuthInfo>
+        </div>
+      )}
 
       {formError && (
         <div ref={alertRef} tabIndex={-1} className="auth-alert">

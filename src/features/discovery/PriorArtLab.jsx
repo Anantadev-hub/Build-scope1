@@ -1,5 +1,5 @@
-import React, { useMemo, useState } from 'react';
-import { Plus, Search, Radar, GitBranch, FileText, Database, Plug, Package, Trophy, CheckSquare, Square, AlertTriangle, Copy, Trash2, Edit3, ArrowRight, Layers, Info, } from 'lucide-react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Plus, Search, Radar, GitBranch, FileText, Database, Plug, Package, Trophy, CheckSquare, Square, AlertTriangle, Copy, Trash2, Edit3, ArrowRight, Layers, Info, RefreshCw, } from 'lucide-react';
 import { useApp } from '../../app/store';
 import { useRouteProject, usePageTitle } from '../../app/hooks';
 import {
@@ -7,9 +7,33 @@ import {
 import { repositoryFinding, existingSolution, evidenceRecord, feature } from '../../lib/models';
 import { EVIDENCE_STATUS, OVERLAP, VERIFICATION_OPTIONS, SOURCE_KINDS } from '../../lib/constants';
 import { COMPARISON_LEVELS, COMPARISON_DIMENSIONS } from '../../lib/report';
+import { createRepositorySearchProvider, dedupeResults } from '../../services/providers';
+import { configIssues } from '../../config';
 import { fmtDate, hostOf, safeHref } from '../../lib/format';
 
 const KIND_ICON = { product: Package, paper: FileText, dataset: Database, api: Plug, hackathon: Trophy };
+
+const LIVE_TONE = { idle: 'outline', loading: 'amber', success: 'green', empty: 'outline', error: 'red', 'not-configured': 'orange' };
+const LIVE_LABEL = {
+  idle: 'READY — NOT RUN',
+  loading: 'SEARCHING…',
+  success: 'LIVE RESULTS',
+  empty: 'LIVE — NO MATCHES',
+  error: 'SEARCH FAILED',
+  'not-configured': 'NOT CONFIGURED',
+};
+
+// Identity of a repository record across sources: its URL, or owner/name.
+const repoKey = (r) => String(r.url || `${r.owner || ''}/${r.name || ''}`).trim().toLowerCase();
+
+// Environment problems are static for the life of the page, so they are
+// computed once and shown next to the provider status.
+const CONFIG_ISSUES = configIssues();
+
+const emptyLive = (configured) => ({
+  status: configured ? 'idle' : 'not-configured',
+  query: '', found: 0, added: 0, skipped: 0, at: '', source: '', code: '', message: '', warnings: [],
+});
 
 function relevance(repo, p) {
   const hay = [repo.name, repo.owner, repo.description, ...(repo.topics || []), ...(repo.relevantFeatures || []), repo.matchReason, repo.possibleDifferences]
@@ -219,6 +243,103 @@ export default function PriorArtLab() {
   const selected = p?.comparison?.selectedIds || [];
   const allAlternatives = [...repos, ...solutions];
 
+  const plan = useMemo(() => {
+    if (!p) return [];
+    return [
+      p.name,
+      p.features[0]?.name ? `${p.features[0].name} ${p.targetUsers[0] || ''}` : null,
+      p.targetUsers[0] ? `${p.targetUsers[0]} ${p.features[0]?.name || 'platform'}` : null,
+      `${p.features.slice(0, 2).map((f) => f.name).join(' ')} github`.trim(),
+      `${p.stack.slice(0, 2).join(' ')} ${p.targetUsers[0] || 'app'}`.trim(),
+      p.solution ? p.solution.split(/\s+/).slice(0, 7).join(' ') : null,
+    ].map((q) => String(q || '').trim()).filter(Boolean);
+  }, [p]);
+
+  const provider = useMemo(() => createRepositorySearchProvider(), []);
+  const [liveQuery, setLiveQuery] = useState('');
+  const [live, setLive] = useState(() => emptyLive(provider.isConfigured));
+  const abortRef = useRef(null);
+  const autoRan = useRef(new Set());
+  const shownProject = useRef(p?.id || null);
+
+  // The status belongs to the case on screen: switching cases resets it rather
+  // than leaving another case's result count visible.
+  useEffect(() => {
+    const id = p?.id || null;
+    if (shownProject.current === id) return;
+    shownProject.current = id;
+    abortRef.current?.abort();
+    setLive(emptyLive(provider.isConfigured));
+  }, [p?.id, provider.isConfigured]);
+
+  // No unmount abort here: React 18 StrictMode mounts twice in development, and
+  // aborting on that first cleanup would cancel the only request while the
+  // auto-run guard correctly refuses to start a second one. Superseded searches
+  // are still cancelled in runSearch, and the client times out on its own.
+  useEffect(() => { setLiveQuery((current) => current || plan[0] || ''); }, [plan]);
+
+  const runSearch = useCallback(async (rawQuery) => {
+    if (!p) return;
+    const query = String(rawQuery ?? liveQuery ?? '').trim() || plan[0] || p.name || '';
+    if (!query) {
+      setLive({ status: 'error', query: '', found: 0, added: 0, skipped: 0, at: '', source: '', code: 'empty-query', message: 'Enter a search query first — BuildScope does not send blank requests.', warnings: [] });
+      return;
+    }
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+    setLive({ status: 'loading', query, found: 0, added: 0, skipped: 0, at: '', source: '', code: '', message: '', warnings: [] });
+    try {
+      const out = await provider.search({
+        query,
+        queries: plan.filter((q) => q !== query),
+        investigation: {
+          name: p.name,
+          problem: p.problem,
+          solution: p.solution,
+          desiredOutcome: p.desiredOutcome,
+          targetUsers: p.targetUsers,
+          features: p.features.map((f) => f.name).filter(Boolean),
+          stack: p.stack,
+        },
+        limit: 20,
+        signal: controller.signal,
+      });
+      const seen = new Set(repos.map(repoKey));
+      const fresh = dedupeResults(out.results).filter((r) => {
+        const key = repoKey(r);
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+      if (fresh.length) {
+        actions.addItems('repositories', fresh, `Live repository search for “${query}” added ${fresh.length} record(s) from ${out.source}.`);
+      }
+      setLive({
+        status: fresh.length ? 'success' : 'empty',
+        query, at: out.retrievedAt, found: out.results.length, added: fresh.length,
+        skipped: out.skipped, source: out.source, warnings: out.warnings, code: '', message: '',
+      });
+      pushToast(fresh.length
+        ? `Live search added ${fresh.length} repository record(s).`
+        : 'Live search finished: no public repositories matched. That is not proof of originality.');
+    } catch (err) {
+      if (err?.code === 'aborted') return;
+      // The failure is reported as-is. Saved records stay; no fixture is substituted.
+      setLive({ status: 'error', query, found: 0, added: 0, skipped: 0, at: '', source: '', code: err?.code || 'unknown', message: err?.message || 'The live search failed.', warnings: [] });
+    }
+  }, [actions, liveQuery, p, plan, provider, pushToast, repos]);
+
+  // Discovery starts by itself the first time a case without repository
+  // records is opened (that is the normal state of a new investigation).
+  useEffect(() => {
+    if (!p || !provider.isConfigured) return;
+    if (p.repositories.length > 0) return;
+    if (autoRan.current.has(p.id)) return;
+    autoRan.current.add(p.id);
+    runSearch(plan[0] || p.name);
+  }, [p, plan, provider.isConfigured, runSearch]);
+
   const scored = useMemo(() => repos.map((r) => ({ ...r, score: relevance(r, p || { features: [], targetUsers: [], stack: [], problem: '', solution: '' }) })), [repos, p]);
   const languages = [...new Set(repos.map((r) => r.language || 'Unknown'))];
   const platforms = [...new Set(repos.map((r) => r.platform || 'Unknown'))];
@@ -262,14 +383,17 @@ export default function PriorArtLab() {
     updateComparison({ cells: { ...(comparison.cells || {}), [key]: value } });
   };
 
-  const searchPlan = [
-    p.name,
-    p.features[0]?.name ? `${p.features[0].name} ${p.targetUsers[0] || ''}` : null,
-    p.targetUsers[0] ? `${p.targetUsers[0]} ${p.features[0]?.name || 'platform'}` : null,
-    `${p.features.slice(0, 2).map((f) => f.name).join(' ')} github`.trim(),
-    `${p.stack.slice(0, 2).join(' ')} ${p.targetUsers[0] || 'app'}`.trim(),
-    p.solution ? p.solution.split(/\s+/).slice(0, 7).join(' ') : null,
-  ].filter(Boolean);
+  const liveRecords = repos.filter((r) => r.retrieval === 'live');
+  const demoRecords = repos.filter((r) => r.demo);
+  const lastLiveAt = liveRecords.map((r) => r.checkedAt).filter(Boolean).sort().pop() || '';
+  const liveStatusText = {
+    idle: 'Ready. The configured service has not been queried for this case yet.',
+    loading: `Searching the configured service for “${live.query}”…`,
+    success: `Live: ${live.found} result(s) returned, ${live.added} new record(s) saved${live.skipped ? `, ${live.skipped} unusable item(s) skipped` : ''}${live.at ? ` · ${fmtDate(live.at)}` : ''}.`,
+    empty: `Live search for “${live.query}” returned no public repositories. An empty result is not proof of originality.`,
+    error: `The last live search for “${live.query || '—'}” failed. Previously saved records are unchanged.`,
+    'not-configured': 'No endpoint is configured, so no request was made.',
+  }[live.status];
 
   const copyQuery = async (text) => {
     try {
@@ -330,20 +454,73 @@ export default function PriorArtLab() {
         </>}
       />
 
-      <DemoBanner>
-        Repository and solution records below are simulated or manually entered. No live search provider is connected;
-        BuildScope has not queried GitHub, FishAPI, or any other source. Stars, licences, dates, and links are shown as
-        unknown where no verified value exists.
-      </DemoBanner>
+      {demoRecords.length > 0 && (
+        <DemoBanner>
+          {demoRecords.length} of the {repos.length} repository record(s) below are demo fixtures attached to the seeded demo
+          case — not live search results. Stars, licences, dates, and links are unknown where no verified value exists.
+        </DemoBanner>
+      )}
+
+      {liveRecords.length > 0 && (
+        <Notice tone="ok">
+          <b>{liveRecords.length} live record(s)</b> retrieved from the configured repository service
+          {lastLiveAt ? ` · last retrieval ${fmtDate(lastLiveAt)}` : ''}. Public metadata only — documented capability still
+          requires reading the source.
+        </Notice>
+      )}
 
       <div className="grid g-2-1 mb16" style={{ alignItems: 'stretch' }}>
-        <Card title="Search plan" eyebrow="Derived locally from your brief" className="mb0">
-          <p className="small muted">
-            A live search integration will turn the brief into multiple queries, deduplicate results, and compare documented
-            capabilities. Until a provider is connected, use this plan to search manually.
-          </p>
-          <div className="stack-sm mt12">
-            {searchPlan.map((query, i) => (
+        <Card title="Repository search" eyebrow={provider.isConfigured ? 'Configured service' : 'No service configured'} className="mb0">
+          <div className="spread small">
+            <span className="muted">Live search status</span>
+            <TagBadge tone={LIVE_TONE[live.status]}>{LIVE_LABEL[live.status]}</TagBadge>
+          </div>
+          <div className="xs muted mt8" role="status" aria-live="polite">{liveStatusText}</div>
+
+          {provider.isConfigured ? (
+            <>
+              <div className="row nowrap mt12" style={{ gap: 8 }}>
+                <input
+                  type="search"
+                  value={liveQuery}
+                  onChange={(e) => setLiveQuery(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); runSearch(liveQuery); } }}
+                  placeholder="Query sent to the repository service…"
+                  aria-label="Repository search query"
+                  disabled={live.status === 'loading'}
+                />
+                <Btn variant="primary" size="sm" onClick={() => runSearch(liveQuery)} disabled={live.status === 'loading'}>
+                  {live.status === 'loading' ? 'Searching…' : live.status === 'error' ? <><RefreshCw size={12} /> Retry</> : <><Search size={12} /> Search</>}
+                </Btn>
+              </div>
+              {live.status === 'error' && (
+                <div className="mt12">
+                  <Notice tone="danger">{live.message}</Notice>
+                  <div className="row mt8" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
+                    <span className="xs muted">Saved records below are unchanged. No demo data was substituted for the failed request.</span>
+                    <Btn variant="ghost" size="sm" onClick={() => runSearch(live.query || liveQuery)}><RefreshCw size={12} /> Retry search</Btn>
+                  </div>
+                </div>
+              )}
+              {live.warnings.length > 0 && <div className="mt8"><Notice tone="warn">{live.warnings.join(' ')}</Notice></div>}
+            </>
+          ) : (
+            <div className="mt12">
+              <Notice tone="warn">
+                <b>Live search is not connected in this build.</b> No request was made, and no fixture is displayed in its place.
+                Set <code>VITE_REPOSITORY_SEARCH_URL</code> to the backend route that implements <code>POST /api/search/repositories</code>.
+              </Notice>
+              <p className="xs muted mb0 mt8">
+                Request and response shapes are documented in <code>src/services/providers.js</code> (search for
+                <code> REPOSITORY_SEARCH_CONTRACT</code>) and in the README.
+              </p>
+            </div>
+          )}
+
+          <div className="line" />
+          <div className="eyebrow plain">Derived search plan</div>
+          <div className="stack-sm mt8">
+            {plan.map((query, i) => (
               <div key={`${query}-${i}`} className="row nowrap" style={{ gap: 8 }}>
                 <span className="mono xs muted" style={{ width: 18 }}>{String(i + 1).padStart(2, '0')}</span>
                 <code style={{ flex: 1, background: 'var(--surface-2)', border: '1px solid var(--line)', padding: '5px 8px', fontSize: 11, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{query}</code>
@@ -351,29 +528,48 @@ export default function PriorArtLab() {
               </div>
             ))}
           </div>
-          <div className="mt12"><Notice tone="warn"><b>Search not executed.</b> Queries are suggestions generated from saved fields. No request leaves this browser.</Notice></div>
+          <div className="xs muted mt8">
+            Queries are generated from saved fields. Copying one does not run it; only the search control above sends a request.
+          </div>
         </Card>
 
-        <Card title="Provider readiness" eyebrow="Future integration" className="mb0">
+        <Card title="Provider readiness" eyebrow="Configured services" className="mb0">
           <div className="stack-sm">
-            <div className="spread small"><span className="muted">Repository search</span><TagBadge tone="orange">NOT CONNECTED</TagBadge></div>
+            <div className="spread small"><span className="muted">Repository search</span><TagBadge tone={provider.isConfigured ? 'green' : 'orange'}>{provider.isConfigured ? 'CONFIGURED' : 'NOT CONFIGURED'}</TagBadge></div>
             <div className="spread small"><span className="muted">Web / product search</span><TagBadge tone="orange">NOT CONNECTED</TagBadge></div>
             <div className="spread small"><span className="muted">Paper & dataset search</span><TagBadge tone="orange">NOT CONNECTED</TagBadge></div>
             <div className="spread small"><span className="muted">Official source check</span><TagBadge tone="orange">NOT CONNECTED</TagBadge></div>
           </div>
           <div className="line" />
-          <p className="xs muted mb0">
-            Interfaces live in <code>src/services/providers.js</code>. Secret-bearing requests must run through a backend
-            or server function; no credentials belong in this client.
-          </p>
+          {provider.isConfigured ? (
+            <p className="xs muted mb0">
+              Endpoint host: <code>{hostOf(provider.endpoint)}</code>. The request carries the query and the
+              investigation summary; tokens stay on the server.
+            </p>
+          ) : (
+            <p className="xs muted mb0">
+              Repository search needs <code>{provider.configKey}</code> in the build environment. Secret-bearing requests must
+              run through the backend; no credentials belong in this client bundle.
+            </p>
+          )}
+          {CONFIG_ISSUES.length > 0 && (
+            <div className="mt8">
+              <Notice tone="warn">
+                <b>Configuration problem.</b>
+                <ul className="xs" style={{ margin: '4px 0 0', paddingLeft: 16 }}>
+                  {CONFIG_ISSUES.map((issue) => <li key={issue}>{issue}</li>)}
+                </ul>
+              </Notice>
+            </div>
+          )}
           <details className="mt12">
-            <summary className="mono xs" style={{ cursor: 'pointer', color: 'var(--ink-2)' }}>WHAT A LIVE SEARCH WOULD DO</summary>
+            <summary className="mono xs" style={{ cursor: 'pointer', color: 'var(--ink-2)' }}>WHAT A LIVE SEARCH DOES</summary>
             <ol className="xs muted" style={{ marginTop: 8, paddingLeft: 16 }}>
               <li>Extract problem, users, features, stack, and expected outcome.</li>
               <li>Generate alternative-phrased and technical queries.</li>
-              <li>Retrieve repository metadata and documentation from a permitted provider.</li>
-              <li>Deduplicate and rank by evidence-backed relevance.</li>
-              <li>Compare documented capabilities, recording timestamps and retrieval limitations.</li>
+              <li>Send the primary query to the configured backend route.</li>
+              <li>Deduplicate returned records against those already saved for this case.</li>
+              <li>Record the retrieval timestamp and its limitations with each record.</li>
             </ol>
           </details>
         </Card>
@@ -432,7 +628,7 @@ export default function PriorArtLab() {
           </div>
 
           <div className="spread mb16">
-            <span className="mono xs muted">{filtered.length} of {repos.length} RECORDS · HEURISTIC RELEVANCE IS COMPUTED LOCALLY, NOT A LIVE RANKING</span>
+            <span className="mono xs muted">{filtered.length} of {repos.length} RECORDS · {liveRecords.length} LIVE / {demoRecords.length} DEMO · HEURISTIC RELEVANCE IS COMPUTED LOCALLY, NOT A LIVE RANKING</span>
             {selected.length > 0 && (
               <span className="row" style={{ gap: 6 }}>
                 <span className="mono xs">{selected.length} selected</span>
@@ -444,7 +640,9 @@ export default function PriorArtLab() {
 
           {repos.length === 0 ? (
             <div className="card"><EmptyState icon={Radar} title="No repository leads recorded" action={<Btn variant="primary" onClick={() => setModal({ type: 'repo' })}><Plus size={14} /> Add the first lead</Btn>}>
-              Search manually, then save what you find with the claim it supports. A live provider can be connected later without changing this workflow.
+              {provider.isConfigured
+                ? 'The configured service has not returned a usable record for this case yet. Run a search above, or add a lead manually with the claim it supports.'
+                : 'Live search is not configured in this build. Use the derived queries to search manually, then save what you find with the claim it supports.'}
             </EmptyState></div>
           ) : filtered.length === 0 ? (
             <div className="card"><EmptyState icon={Search} title="No records match these filters" action={<Btn variant="ghost" onClick={() => { setQ(''); setFilters({ language: '', overlap: '', licence: '', updated: '', platform: '' }); }}>Clear filters</Btn>}>
@@ -462,6 +660,7 @@ export default function PriorArtLab() {
                         <div className="row" style={{ gap: 7 }}>
                           <span className="repo-owner">{r.owner || 'Unknown owner'} /</span>
                           {r.demo && <span className="badge demo">DEMO</span>}
+                          {r.retrieval === 'live' && <span className="badge green">LIVE</span>}
                           {isSel && <span className="badge dark">SELECTED</span>}
                         </div>
                         <div className="repo-title">{r.name}</div>

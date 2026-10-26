@@ -1,6 +1,7 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { Navigate, useLocation } from 'react-router-dom';
 import { auth as defaultAuth, workspaceKeyFor } from '../services/auth';
+import { onUnauthorized } from '../services/api';
 
 const AuthContext = createContext(null);
 
@@ -9,6 +10,9 @@ export function AuthProvider({ children, adapter = defaultAuth }) {
   const [session, setSession] = useState(null);
   const [notice, setNotice] = useState(null);
   const pendingNotice = useRef(null);
+  // Mirrors status so async handlers can bail without stale closures.
+  const statusRef = useRef(status);
+  statusRef.current = status;
 
   useEffect(() => {
     let alive = true;
@@ -25,6 +29,50 @@ export function AuthProvider({ children, adapter = defaultAuth }) {
       });
     return () => { alive = false; };
   }, [adapter]);
+
+  // One place ends a session. A 401 from any request, or a session that turned
+  // out to be expired, lands here and leaves a readable reason on the sign-in
+  // screen instead of a silently broken workspace.
+  const endSession = useCallback(async (message) => {
+    if (statusRef.current !== 'signed-in') return;
+    statusRef.current = 'signed-out';
+    try {
+      await adapter.signOut();
+    } catch {
+      // The local session clear is best-effort; the UI still signs out.
+    }
+    setSession(null);
+    setStatus('signed-out');
+    setNotice(message);
+  }, [adapter]);
+
+  useEffect(() => onUnauthorized(() => {
+    endSession('Your session is no longer valid. Sign in again to reopen this workspace.');
+  }), [endSession]);
+
+  // Local sessions carry an expiry. Re-check when the tab becomes visible again
+  // so a stale session cannot sit on screen indefinitely.
+  useEffect(() => {
+    let lastCheck = Date.now();
+    const check = async () => {
+      if (document.visibilityState !== 'visible') return;
+      if (statusRef.current !== 'signed-in') return;
+      if (Date.now() - lastCheck < 30000) return;
+      lastCheck = Date.now();
+      try {
+        const current = await adapter.getSession();
+        if (!current) endSession('Your session expired. Sign in again to reopen this workspace.');
+      } catch {
+        // A transient failure must not throw the user out mid-edit.
+      }
+    };
+    document.addEventListener('visibilitychange', check);
+    window.addEventListener('focus', check);
+    return () => {
+      document.removeEventListener('visibilitychange', check);
+      window.removeEventListener('focus', check);
+    };
+  }, [adapter, endSession]);
 
   const settle = useCallback((result) => {
     setSession(result.session);
